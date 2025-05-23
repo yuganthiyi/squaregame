@@ -1,16 +1,94 @@
-//
-//  ContentView.swift
-//  squaregame
-//
-//  Created by Yuganthi 035 on 2025-05-04.
-//
 import SwiftUI
 
 struct Tile: Identifiable {
     let id: Int
-    var color: Color
-    var isMatched: Bool = false
-    var isRevealed: Bool = false
+    let color: Color
+    var shape: ShapeType
+    var isMatched = false
+    var isRevealed = false
+}
+
+enum ShapeType: CaseIterable {
+    case roundedRectangle, circle, capsule, star, triangle
+}
+
+// Helper for custom shapes: Star & Triangle
+
+struct StarShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let starPoints = 5
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        let adjustment = -CGFloat.pi / 2
+
+        var path = Path()
+
+        for i in 0..<starPoints * 2 {
+            let angle = (Double(i) * Double.pi / Double(starPoints)) + Double(adjustment)
+            let pointRadius = i.isMultiple(of: 2) ? radius : radius * 0.4
+            let x = center.x + CGFloat(cos(angle)) * pointRadius
+            let y = center.y + CGFloat(sin(angle)) * pointRadius
+
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct TriangleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        let top = CGPoint(x: rect.midX, y: rect.minY)
+        let left = CGPoint(x: rect.minX, y: rect.maxY)
+        let right = CGPoint(x: rect.maxX, y: rect.maxY)
+
+        path.move(to: top)
+        path.addLine(to: left)
+        path.addLine(to: right)
+        path.closeSubpath()
+
+        return path
+    }
+}
+
+struct AnyShape: Shape {
+    private let path: (CGRect) -> Path
+
+    init<S: Shape>(_ wrapped: S) {
+        path = { rect in
+            wrapped.path(in: rect)
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        path(rect)
+    }
+}
+
+struct GradientButtonLabel: View {
+    var text: String
+    var body: some View {
+        Text(text)
+            .font(.headline)
+            .foregroundColor(.white)
+            .padding(.horizontal, 30)
+            .padding(.vertical, 12)
+            .background(
+                LinearGradient(
+                    gradient: Gradient(colors: [Color.purple, Color.blue]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .cornerRadius(15)
+            .shadow(color: Color.black.opacity(0.2), radius: 4, x: 0, y: 2)
+    }
 }
 
 struct ContentView: View {
@@ -24,15 +102,17 @@ struct ContentView: View {
     @State private var gameStarted: Bool = false
     @State private var gameOver: Bool = false
 
-    let totalRounds = 3
-    let tileCounts = [8, 12, 16]
+    @State private var accumulatedTime = 0  // leftover time from previous round
+
+    let totalRounds = 5
+    let tileCounts = [8, 12, 16, 20, 24]  // total tiles per round (must be even)
     let allColors: [Color] = [.red, .green, .blue, .orange, .yellow, .purple, .pink, .cyan, .mint, .indigo, .teal, .brown]
+    let allShapes: [ShapeType] = ShapeType.allCases
 
     @State private var gameTimer: Timer?
 
     var body: some View {
         ZStack {
-            // Background
             LinearGradient(gradient: Gradient(colors: [Color.purple.opacity(0.7), Color.blue.opacity(0.6)]),
                            startPoint: .topLeading,
                            endPoint: .bottomTrailing)
@@ -47,6 +127,7 @@ struct ContentView: View {
                         endGameView
                     } else {
                         gameGrid
+                        quitButton
                     }
                 }
             }
@@ -56,7 +137,6 @@ struct ContentView: View {
     }
 
     // MARK: - Intro Screen
-
     var introScreen: some View {
         VStack(spacing: 30) {
             Text("🎨 Colour Match Game")
@@ -70,6 +150,8 @@ struct ContentView: View {
             Button(action: {
                 withAnimation {
                     gameStarted = true
+                    accumulatedTime = 0
+                    resetGameVars()
                     startNewRound()
                 }
             }) {
@@ -80,7 +162,6 @@ struct ContentView: View {
     }
 
     // MARK: - Game Header
-
     var gameHeader: some View {
         VStack(spacing: 8) {
             HStack {
@@ -93,14 +174,14 @@ struct ContentView: View {
                     .foregroundColor(.white)
             }
 
-            ProgressView(value: Double(timeRemaining), total: Double(30 + (currentRound - 1) * 10))
+            ProgressView(value: Double(timeRemaining),
+                         total: Double(30 + (currentRound - 1) * 10 + accumulatedTime))
                 .progressViewStyle(LinearProgressViewStyle(tint: .white))
         }
         .padding(.horizontal)
     }
 
     // MARK: - End Game View
-
     var endGameView: some View {
         VStack(spacing: 24) {
             Text(gameOver ? "⏱ Game Over" : "🎉 You Won!")
@@ -112,7 +193,14 @@ struct ContentView: View {
                 .font(.title2)
                 .foregroundColor(.white)
 
-            Button(action: resetGame) {
+            Button(action: {
+                withAnimation {
+                    resetGameVars()
+                    startNewRound()
+                    showFinalScore = false
+                    gameOver = false
+                }
+            }) {
                 GradientButtonLabel(text: "Play Again")
             }
         }
@@ -125,8 +213,29 @@ struct ContentView: View {
         .padding(.top, 40)
     }
 
-    // MARK: - Game Grid
+    // MARK: - Quit Button
+    var quitButton: some View {
+        Button(action: {
+            withAnimation {
+                stopTimer()
+                resetGameVars()
+                gameStarted = false
+                showFinalScore = false
+                gameOver = false
+            }
+        }) {
+            Text("Quit")
+                .font(.headline)
+                .foregroundColor(.white)
+                .padding(.horizontal, 30)
+                .padding(.vertical, 10)
+                .background(Color.red.opacity(0.7))
+                .cornerRadius(12)
+        }
+        .padding(.top)
+    }
 
+    // MARK: - Game Grid
     var gameGrid: some View {
         let columns = getColumnCount()
         return VStack {
@@ -137,11 +246,11 @@ struct ContentView: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: columns), spacing: 10) {
                 ForEach(tiles) { tile in
                     ZStack {
-                        RoundedRectangle(cornerRadius: 12)
+                        shapeView(for: tile)
                             .fill(tile.isMatched || tile.isRevealed ? tile.color : Color.white.opacity(0.15))
                             .frame(height: 80)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12)
+                                shapeView(for: tile)
                                     .stroke(Color.white.opacity(0.25), lineWidth: 1)
                             )
                             .shadow(color: .black.opacity(0.2), radius: 4, x: 2, y: 2)
@@ -150,7 +259,6 @@ struct ContentView: View {
                                     ? Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(.white)
                                         .font(.system(size: 24, weight: .bold))
-                                        .transition(.scale)
                                     : nil
                             )
                             .rotation3DEffect(
@@ -169,7 +277,20 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Game Logic
+    func shapeView(for tile: Tile) -> some Shape {
+        switch tile.shape {
+        case .roundedRectangle:
+            return AnyShape(RoundedRectangle(cornerRadius: 12))
+        case .circle:
+            return AnyShape(Circle())
+        case .capsule:
+            return AnyShape(Capsule())
+        case .star:
+            return AnyShape(StarShape())
+        case .triangle:
+            return AnyShape(TriangleShape())
+        }
+    }
 
     func getTileCount() -> Int {
         tileCounts[currentRound - 1]
@@ -179,51 +300,50 @@ struct ContentView: View {
         return 4
     }
 
-    func resetGame() {
+    func resetGameVars() {
+        stopTimer()
         score = 0
         currentRound = 1
-        showFinalScore = false
-        gameOver = false
         firstSelectionIndex = nil
         lockInteraction = false
-        startNewRound()
+        accumulatedTime = 0
+        tiles = []
     }
 
     func startNewRound() {
         stopTimer()
-        timeRemaining = 30 + (currentRound - 1) * 10
+        timeRemaining = 30 + (currentRound - 1) * 10 + accumulatedTime
+        accumulatedTime = 0
         firstSelectionIndex = nil
         lockInteraction = false
 
         let tileCount = getTileCount()
         let pairCount = tileCount / 2
 
-        var selectedColors = Array(allColors.shuffled().prefix(pairCount))
-        var tileColors = (selectedColors + selectedColors).shuffled()
+        // Randomly pick colors and shapes for pairs
+        let selectedColors = Array(allColors.shuffled().prefix(pairCount))
+        let selectedShapes = Array(allShapes.shuffled().prefix(pairCount))
 
-        if tileColors.count < tileCount {
-            tileColors.append(allColors.randomElement()!)
+        var tilePairs: [Tile] = []
+        for i in 0..<pairCount {
+            let color = selectedColors[i]
+            let shape = selectedShapes[i % selectedShapes.count]
+            tilePairs.append(Tile(id: i * 2, color: color, shape: shape))
+            tilePairs.append(Tile(id: i * 2 + 1, color: color, shape: shape))
         }
 
-        tiles = (0..<tileColors.count).map { i in
-            Tile(id: i, color: tileColors[i])
-        }
+        tiles = tilePairs.shuffled()
 
         startTimer()
     }
 
     func startTimer() {
-        gameTimer?.invalidate()
-        gameTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+        gameTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             if timeRemaining > 0 {
                 timeRemaining -= 1
             } else {
+                gameOver = true
                 stopTimer()
-                if tiles.allSatisfy({ $0.isMatched }) {
-                    advanceToNextRound()
-                } else {
-                    gameOver = true
-                }
             }
         }
     }
@@ -234,78 +354,52 @@ struct ContentView: View {
     }
 
     func handleTap(on id: Int) {
-        guard let index = tiles.firstIndex(where: { $0.id == id }),
-              !tiles[index].isMatched,
-              !tiles[index].isRevealed else { return }
+        guard let index = tiles.firstIndex(where: { $0.id == id }) else { return }
+        guard !tiles[index].isRevealed && !tiles[index].isMatched && !lockInteraction else { return }
 
         tiles[index].isRevealed = true
 
         if let firstIndex = firstSelectionIndex {
-            if tiles[firstIndex].color == tiles[index].color {
-                lockInteraction = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    tiles[firstIndex].isMatched = true
-                    tiles[index].isMatched = true
-                    tiles[firstIndex].isRevealed = false
-                    tiles[index].isRevealed = false
-                    score += 10
-                    lockInteraction = false
-                    firstSelectionIndex = nil
-                    checkRoundComplete()
+            // Second selection
+            lockInteraction = true
+            if tiles[firstIndex].color == tiles[index].color &&
+                tiles[firstIndex].shape == tiles[index].shape {
+                // It's a match (same color and shape)
+                tiles[firstIndex].isMatched = true
+                tiles[index].isMatched = true
+                score += 10
+                lockInteraction = false
+                firstSelectionIndex = nil
+
+                // Check if round complete
+                if tiles.allSatisfy({ $0.isMatched }) {
+                    stopTimer()
+                    accumulatedTime = timeRemaining
+                    if currentRound == totalRounds {
+                        showFinalScore = true
+                    } else {
+                        currentRound += 1
+                        startNewRound()
+                    }
                 }
             } else {
-                lockInteraction = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                // Not a match, flip back after delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     tiles[firstIndex].isRevealed = false
                     tiles[index].isRevealed = false
-                    firstSelectionIndex = nil
                     lockInteraction = false
+                    firstSelectionIndex = nil
                 }
             }
         } else {
+            // First selection
             firstSelectionIndex = index
         }
     }
-
-    func checkRoundComplete() {
-        if tiles.allSatisfy({ $0.isMatched }) {
-            stopTimer()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                advanceToNextRound()
-            }
-        }
-    }
-
-    func advanceToNextRound() {
-        if currentRound < totalRounds {
-            currentRound += 1
-            startNewRound()
-        } else {
-            showFinalScore = true
-        }
-    }
 }
 
-// MARK: - Gradient Button Label
-
-struct GradientButtonLabel: View {
-    var text: String
-
-    var body: some View {
-        Text(text)
-            .font(.title3).bold()
-            .padding(.horizontal, 24)
-            .padding(.vertical, 12)
-            .background(
-                LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-            .foregroundColor(.white)
-            .cornerRadius(12)
-            .shadow(color: .black.opacity(0.3), radius: 6, x: 2, y: 4)
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
     }
 }
-
-#Preview {
-    ContentView()
-}
-
